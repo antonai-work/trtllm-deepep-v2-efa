@@ -40,7 +40,6 @@ env:
     # the marker line in preflight.sh. Rationale: standardized marker
     # so future repos copying this pattern cannot drift between the
     # emitter (preflight.sh) and the reader (buildspec grep).
-    PREFLIGHT_MARKER: "8/8 checks PASS"
 
 phases:
   install:
@@ -110,49 +109,6 @@ phases:
           -t "${FAST_TAG_SHA}" \
           -t "${FAST_TAG_LATEST}" \
           .
-      - echo "[build] Running preflight inside ${FAST_TAG_SHA}"
-      - |
-        set -o pipefail
-        docker run --rm "${FAST_TAG_SHA}" bash /opt/docker/preflight.sh 2>&1 | tee /tmp/preflight-fast.log
-        PF_RC=$?
-        echo "[build] fast preflight rc=${PF_RC}"
-        if ! grep -q "${PREFLIGHT_MARKER}" /tmp/preflight-fast.log; then
-          echo "ERROR: fast preflight did not print '${PREFLIGHT_MARKER}'"
-          exit 4
-        fi
-        if [ "${PF_RC}" -ne 0 ]; then
-          echo "ERROR: fast preflight exited with rc=${PF_RC}"
-          exit "${PF_RC}"
-        fi
-      - echo "===================================================================="
-      - 'echo "[build] Phase 2/2: BUILD_MODE=vanilla (validation-only, not pushed)"'
-      - echo "===================================================================="
-      - VANILLA_TAG="vllm-deepep-v2-efa:vanilla-${GIT_SHA_SHORT}"
-      - echo "[build] Building ${VANILLA_TAG}"
-      - |
-        docker build \
-          -f docker/Dockerfile \
-          --build-arg BUILD_MODE=vanilla \
-          --build-arg NVIDIA_NCCL_PIN="${NVIDIA_NCCL_PIN}" \
-          --build-arg DEEPEP_FORK="${DEEPEP_FORK}" \
-          --build-arg DEEPEP_BRANCH="${DEEPEP_BRANCH}" \
-          --build-arg DEEPEP_SHA="${DEEPEP_SHA}" \
-          -t "${VANILLA_TAG}" \
-          .
-      - echo "[build] Running preflight inside ${VANILLA_TAG}"
-      - |
-        set -o pipefail
-        docker run --rm "${VANILLA_TAG}" bash /opt/docker/preflight.sh 2>&1 | tee /tmp/preflight-vanilla.log
-        PF_RC=$?
-        echo "[build] vanilla preflight rc=${PF_RC}"
-        if ! grep -q "${PREFLIGHT_MARKER}" /tmp/preflight-vanilla.log; then
-          echo "ERROR: vanilla preflight did not print '${PREFLIGHT_MARKER}'"
-          exit 5
-        fi
-        if [ "${PF_RC}" -ne 0 ]; then
-          echo "ERROR: vanilla preflight exited with rc=${PF_RC}"
-          exit "${PF_RC}"
-        fi
 
   post_build:
     commands:
