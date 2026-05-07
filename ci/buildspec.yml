@@ -1,0 +1,56 @@
+# AWS CodeBuild buildspec for megatron-deepep-v2-efa.
+# Mirroring vllm-deepep-v2-efa pattern (Wave 5).
+version: 0.2
+
+env:
+  variables:
+    DOCKER_BUILDKIT: "1"
+    BASE_IMAGE_FAST: "ghcr.io/antonai-work/deepep-v2-efa-base:v0.2.5-sm90a"
+
+phases:
+  install:
+    commands:
+      - echo "[install] Installing helpers"
+      - docker --version && aws --version
+
+  pre_build:
+    commands:
+      - echo "[pre_build] Starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - test -n "${AWS_ACCOUNT_ID}" || (echo "ERROR: AWS_ACCOUNT_ID unset" && exit 2)
+      - test -n "${AWS_REGION}" || (echo "ERROR: AWS_REGION unset" && exit 2)
+      - test -n "${ECR_REPO}" || (echo "ERROR: ECR_REPO unset" && exit 2)
+      - ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+      - |
+        if [ -n "${GHCR_READ_TOKEN_SECRET_ARN:-}" ]; then
+          echo "[pre_build] Logging in to GHCR"
+          GHCR_TOKEN="$(aws secretsmanager get-secret-value --secret-id "${GHCR_READ_TOKEN_SECRET_ARN}" --query SecretString --output text)"
+          echo "${GHCR_TOKEN}" | docker login ghcr.io --username antonai-work --password-stdin
+          unset GHCR_TOKEN
+        fi
+      - GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD)"
+      - test -f pins.env && . ./pins.env || true
+      - docker pull "${BASE_IMAGE_FAST}"
+
+  build:
+    commands:
+      - FAST_TAG_SHA="${ECR_REGISTRY}/${ECR_REPO}:fast-${GIT_SHA_SHORT}"
+      - FAST_TAG_LATEST="${ECR_REGISTRY}/${ECR_REPO}:fast-latest"
+      - echo "[build] Building ${FAST_TAG_SHA}"
+      - |
+        docker build -f docker/Dockerfile \
+          --build-arg BUILD_MODE=fast \
+          --build-arg BASE_IMAGE_FAST="${BASE_IMAGE_FAST}" \
+          -t "${FAST_TAG_SHA}" -t "${FAST_TAG_LATEST}" .
+
+  post_build:
+    commands:
+      - echo "[post_build] Starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          echo "[post_build] Build failing; skipping push"
+          exit 0
+        fi
+      - docker push "${FAST_TAG_SHA}"
+      - docker push "${FAST_TAG_LATEST}"
+      - echo "[post_build] Done"
