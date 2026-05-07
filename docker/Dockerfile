@@ -44,9 +44,18 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # -----------------------------------------------------------------------------
 ARG TRTLLM_VERSION=0.21.0
 
-# TODO (Wave 30): install tensorrt_llm==${TRTLLM_VERSION}, openmpi, mpi4py,
-# and re-pin torch/nccl/nvshmem to match the v0.2.5 base (see
-# vllm-deepep-v2-efa Dockerfile for the reference pin-guard sequence).
+# Minimal overlay for Wave 30 cross-node smoke. Full CutlassFusedMoE fast-path
+# tuning + YAML-driven enable_attention_dp TBD.
+RUN pip install --no-cache-dir --break-system-packages \
+      "tensorrt_llm==${TRTLLM_VERSION}" \
+      "mpi4py"
+
+# Guard torch/nccl/nvshmem to match v0.2.5 base (cu13-unified stack).
+ARG NVIDIA_NCCL_PIN=2.30.4
+ARG NVSHMEM_PIN=2.11.2
+RUN pip install --no-cache-dir --break-system-packages --no-deps --force-reinstall \
+      "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
+      "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
 
 ENV TRTLLM_CAN_USE_DEEP_EP=1
 
