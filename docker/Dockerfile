@@ -71,10 +71,11 @@ RUN set -e; \
     python3 -c "\
 from importlib.metadata import requires; \
 reqs = requires('tensorrt_llm'); \
-bad = {'torch','torchvision','torchaudio','torchcodec','torch_memory_saver','torchao','flashinfer_python','flashinfer_cubin','triton'}; \
+bad = {'torch','torchvision','torchaudio','torchcodec','torch_memory_saver','torchao','flashinfer_python','flashinfer_cubin','triton','wheel'}; \
 good = [r.split(';')[0].strip() for r in reqs if not any(r.lower().startswith(b.lower()) for b in bad)]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
-    pip install --no-cache-dir --break-system-packages \
+    pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
+    pip install --no-cache-dir --break-system-packages --ignore-installed \
       --extra-index-url "${TRTLLM_INDEX}" \
       -r /tmp/trtllm-deps.txt
 
