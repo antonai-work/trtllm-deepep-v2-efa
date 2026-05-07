@@ -1,56 +1,179 @@
-# AWS CodeBuild buildspec for megatron-deepep-v2-efa.
-# Mirroring vllm-deepep-v2-efa pattern (Wave 5).
+# AWS CodeBuild buildspec for trtllm-deepep-v2-efa.
+#
+# Runs the dual-path docker build:
+#   1. Fast path    (BUILD_MODE=fast)    -> pushed to ECR with tag :fast-<sha>
+#                                           and (if on main) :fast-latest.
+#   2. Vanilla path (BUILD_MODE=vanilla) -> validation-only build. Proves the
+#                                           repo is offline-reproducible from
+#                                           vanilla nvidia/cuda. Not pushed.
+#
+# Preflight runs inside each built image. An image only passes if the
+# preflight script prints a "8/8 checks PASS"-shaped line and exits 0.
+#
+# Required CodeBuild environment variables (set in the CodeBuild project,
+# NOT hardcoded in this file):
+#   AWS_ACCOUNT_ID                         - ECR destination account
+#   AWS_REGION                             - e.g. us-east-2
+#   ECR_REPO                               - e.g. vllm-deepep-v2-efa
+#   GHCR_READ_TOKEN_SECRET_ARN             - Secrets Manager ARN of a GitHub
+#                                            PAT with read:packages scope.
+#                                            Used ONLY by the fast build to
+#                                            pull the private GHCR base image.
+#                                            Optional - if GHCR flips public.
+#
+# See ci/CODEBUILD-SETUP.md for the IAM role, secret, and project provisioning
+# commands (all placeholders, no hardcoded account ID).
+
 version: 0.2
 
 env:
   variables:
     DOCKER_BUILDKIT: "1"
-    BASE_IMAGE_FAST: "ghcr.io/antonai-work/deepep-v2-efa-base:v0.2.5-sm90a"
+    # Fallback default. pins.env at repo root is the canonical source and
+    # overrides this value in pre_build (Wave 9b cu12 unification bumped the
+    # canonical tag from v0.1.1-sm90a -> v0.1.2-sm90a).
+    BASE_IMAGE_FAST: "ghcr.io/antonai-work/deepep-v2-efa-base:v0.1.2-sm90a"
+    # CONTRACT: docker/preflight.sh prints a single line of the form
+    # "<pass>/<total> checks PASS" (currently "8/8 checks PASS") at the
+    # end of a healthy run. The greps below match this exact shape. If
+    # you add/remove preflight checks, update the integer here AND keep
+    # the marker line in preflight.sh. Rationale: standardized marker
+    # so future repos copying this pattern cannot drift between the
+    # emitter (preflight.sh) and the reader (buildspec grep).
+    PREFLIGHT_MARKER: "8/8 checks PASS"
 
 phases:
   install:
     commands:
-      - echo "[install] Installing helpers"
-      - docker --version && aws --version
+      - echo "[install] Installing AWS CLI v2 and docker-buildx helpers"
+      - docker --version
+      - aws --version
+      - apt-get update -y || yum -y install jq || true
+      - jq --version || true
 
   pre_build:
     commands:
-      - echo "[pre_build] Starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      - test -n "${AWS_ACCOUNT_ID}" || (echo "ERROR: AWS_ACCOUNT_ID unset" && exit 2)
-      - test -n "${AWS_REGION}" || (echo "ERROR: AWS_REGION unset" && exit 2)
-      - test -n "${ECR_REPO}" || (echo "ERROR: ECR_REPO unset" && exit 2)
+      - 'echo "[pre_build] Starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+      - 'echo "[pre_build] CodeBuild project AWS_ACCOUNT_ID=${AWS_ACCOUNT_ID} AWS_REGION=${AWS_REGION} ECR_REPO=${ECR_REPO}"'
+      - 'test -n "${AWS_ACCOUNT_ID}" || (echo "ERROR: AWS_ACCOUNT_ID unset" && exit 2)'
+      - 'test -n "${AWS_REGION}"     || (echo "ERROR: AWS_REGION unset" && exit 2)'
+      - 'test -n "${ECR_REPO}"       || (echo "ERROR: ECR_REPO unset" && exit 2)'
       - ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - echo "[pre_build] ECR_REGISTRY=${ECR_REGISTRY}"
+      - echo "[pre_build] Logging in to ECR"
       - aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
       - |
         if [ -n "${GHCR_READ_TOKEN_SECRET_ARN:-}" ]; then
-          echo "[pre_build] Logging in to GHCR"
+          echo "[pre_build] Logging in to GHCR with token from Secrets Manager"
           GHCR_TOKEN="$(aws secretsmanager get-secret-value --secret-id "${GHCR_READ_TOKEN_SECRET_ARN}" --query SecretString --output text)"
-          echo "${GHCR_TOKEN}" | docker login ghcr.io --username antonai-work --password-stdin
+          GHCR_USER="${GHCR_USER:-antonai-work}"
+          echo "${GHCR_TOKEN}" | docker login ghcr.io --username "${GHCR_USER}" --password-stdin
           unset GHCR_TOKEN
+        else
+          echo "[pre_build] GHCR_READ_TOKEN_SECRET_ARN not set; assuming GHCR package is public"
         fi
-      - GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD)"
-      - test -f pins.env && . ./pins.env || true
-      - docker pull "${BASE_IMAGE_FAST}"
+      - GIT_SHA_SHORT="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+      - echo "[pre_build] GIT_SHA_SHORT=${GIT_SHA_SHORT}"
+      # Wave 7d-1 OKR-1 + Wave 9b: source canonical pins from pins.env at the
+      # repo root BEFORE pulling the base image. Single source of truth for
+      # fork/branch/SHA + NCCL pin + base-image tag so a rebase of
+      # dmvevents/DeepEP-1@aws-efa-auto-qp-cap-v2 or a CUDA-runtime unification
+      # only needs to touch one file per consumer repo. Dockerfile retains
+      # hardcoded ARG defaults as fallback.
+      - 'test -f pins.env || (echo "ERROR: pins.env missing at repo root" && exit 2)'
+      - . ./pins.env
+      - echo "[pre_build] pins.env DEEPEP_FORK=${DEEPEP_FORK:-<unset>}"
+      - echo "[pre_build] pins.env DEEPEP_BRANCH=${DEEPEP_BRANCH:-<unset>}"
+      - echo "[pre_build] pins.env DEEPEP_SHA=${DEEPEP_SHA:-<unset>}"
+      - echo "[pre_build] pins.env NVIDIA_NCCL_PIN=${NVIDIA_NCCL_PIN:-<unset>}"
+      - echo "[pre_build] pins.env BASE_IMAGE_FAST=${BASE_IMAGE_FAST:-<unset>}"
+      - echo "[pre_build] Pulling base image for fast path"
+      - 'docker pull "${BASE_IMAGE_FAST}" || (echo "ERROR: cannot pull ${BASE_IMAGE_FAST}. Check GHCR auth or flip package to public." && exit 3)'
 
   build:
     commands:
+      - echo "===================================================================="
+      - 'echo "[build] Phase 1/2: BUILD_MODE=fast"'
+      - echo "===================================================================="
       - FAST_TAG_SHA="${ECR_REGISTRY}/${ECR_REPO}:fast-${GIT_SHA_SHORT}"
       - FAST_TAG_LATEST="${ECR_REGISTRY}/${ECR_REPO}:fast-latest"
       - echo "[build] Building ${FAST_TAG_SHA}"
       - |
-        docker build -f docker/Dockerfile \
+        docker build \
+          -f docker/Dockerfile \
           --build-arg BUILD_MODE=fast \
           --build-arg BASE_IMAGE_FAST="${BASE_IMAGE_FAST}" \
-          -t "${FAST_TAG_SHA}" -t "${FAST_TAG_LATEST}" .
+          --build-arg NVIDIA_NCCL_PIN="${NVIDIA_NCCL_PIN}" \
+          --build-arg DEEPEP_FORK="${DEEPEP_FORK}" \
+          --build-arg DEEPEP_BRANCH="${DEEPEP_BRANCH}" \
+          --build-arg DEEPEP_SHA="${DEEPEP_SHA}" \
+          -t "${FAST_TAG_SHA}" \
+          -t "${FAST_TAG_LATEST}" \
+          .
+      - echo "[build] Running preflight inside ${FAST_TAG_SHA}"
+      - |
+        set -o pipefail
+        docker run --rm "${FAST_TAG_SHA}" bash /opt/docker/preflight.sh 2>&1 | tee /tmp/preflight-fast.log
+        PF_RC=$?
+        echo "[build] fast preflight rc=${PF_RC}"
+        if ! grep -q "${PREFLIGHT_MARKER}" /tmp/preflight-fast.log; then
+          echo "ERROR: fast preflight did not print '${PREFLIGHT_MARKER}'"
+          exit 4
+        fi
+        if [ "${PF_RC}" -ne 0 ]; then
+          echo "ERROR: fast preflight exited with rc=${PF_RC}"
+          exit "${PF_RC}"
+        fi
+      - echo "===================================================================="
+      - 'echo "[build] Phase 2/2: BUILD_MODE=vanilla (validation-only, not pushed)"'
+      - echo "===================================================================="
+      - VANILLA_TAG="vllm-deepep-v2-efa:vanilla-${GIT_SHA_SHORT}"
+      - echo "[build] Building ${VANILLA_TAG}"
+      - |
+        docker build \
+          -f docker/Dockerfile \
+          --build-arg BUILD_MODE=vanilla \
+          --build-arg NVIDIA_NCCL_PIN="${NVIDIA_NCCL_PIN}" \
+          --build-arg DEEPEP_FORK="${DEEPEP_FORK}" \
+          --build-arg DEEPEP_BRANCH="${DEEPEP_BRANCH}" \
+          --build-arg DEEPEP_SHA="${DEEPEP_SHA}" \
+          -t "${VANILLA_TAG}" \
+          .
+      - echo "[build] Running preflight inside ${VANILLA_TAG}"
+      - |
+        set -o pipefail
+        docker run --rm "${VANILLA_TAG}" bash /opt/docker/preflight.sh 2>&1 | tee /tmp/preflight-vanilla.log
+        PF_RC=$?
+        echo "[build] vanilla preflight rc=${PF_RC}"
+        if ! grep -q "${PREFLIGHT_MARKER}" /tmp/preflight-vanilla.log; then
+          echo "ERROR: vanilla preflight did not print '${PREFLIGHT_MARKER}'"
+          exit 5
+        fi
+        if [ "${PF_RC}" -ne 0 ]; then
+          echo "ERROR: vanilla preflight exited with rc=${PF_RC}"
+          exit "${PF_RC}"
+        fi
 
   post_build:
     commands:
       - echo "[post_build] Starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       - |
         if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
-          echo "[post_build] Build failing; skipping push"
+          echo "[post_build] Build failing; skipping ECR push"
           exit 0
         fi
+      - echo "[post_build] Pushing fast tags to ECR"
       - docker push "${FAST_TAG_SHA}"
       - docker push "${FAST_TAG_LATEST}"
-      - echo "[post_build] Done"
+      - echo "[post_build] Recording image digests"
+      - FAST_DIGEST="$(docker inspect --format='{{range .RepoDigests}}{{println .}}{{end}}' "${FAST_TAG_SHA}" | head -1 || true)"
+      - VANILLA_ID="$(docker inspect --format='{{.Id}}' "${VANILLA_TAG}" || true)"
+      - echo "[post_build] fast    digest  = ${FAST_DIGEST}"
+      - echo "[post_build] vanilla image   = ${VANILLA_ID}"
+      - echo "[post_build] Done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+artifacts:
+  files:
+    - /tmp/preflight-fast.log
+    - /tmp/preflight-vanilla.log
+  discard-paths: yes
