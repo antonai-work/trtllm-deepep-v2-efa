@@ -44,18 +44,27 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # -----------------------------------------------------------------------------
 ARG TRTLLM_VERSION=0.21.0
 
-# Minimal overlay for Wave 30 cross-node smoke. Full CutlassFusedMoE fast-path
-# tuning + YAML-driven enable_attention_dp TBD.
-RUN pip install --no-cache-dir --break-system-packages \
-      "tensorrt_llm==${TRTLLM_VERSION}" \
-      "mpi4py"
+# tensorrt_llm 0.21.0 pins torch 2.6.0+cu124 which would shatter v0.2.5's
+# cu13 invariant (EVIDENCE-LEDGER Wave 7d #1). Install --no-deps and
+# curate runtime deps to keep torch 2.11.0+cu130 intact.
+RUN pip install --no-cache-dir --break-system-packages --no-deps \
+      "tensorrt_llm==${TRTLLM_VERSION}"
 
-# Guard torch/nccl/nvshmem to match v0.2.5 base (cu13-unified stack).
-ARG NVIDIA_NCCL_PIN=2.30.4
-ARG NVSHMEM_PIN=3.4.5
-RUN pip install --no-cache-dir --break-system-packages --no-deps --force-reinstall \
-      "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
-      "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
+# Non-torch runtime deps. Curated from tensorrt_llm 0.21.0 pyproject.toml
+# minus {torch*, nvidia-*-cu12, tensorrt (wrong CUDA), flashinfer*}.
+RUN pip install --no-cache-dir --break-system-packages --no-deps \
+      mpi4py accelerate build colored cuda-python diffusers lark \
+      onnx onnx_graphsurgeon openai polygraphy psutil \
+      'nvidia-ml-py>=12' 'pynvml>=12.0.0' pulp pandas 'h5py==3.12.1' \
+      StrEnum 'sentencepiece>=0.1.99' transformers tokenizers safetensors \
+      huggingface_hub requests urllib3 charset-normalizer idna certifi \
+      tqdm pydantic pydantic_core fastapi 'uvicorn[standard]' \
+      starlette sniffio anyio h11 click numpy scipy einops \
+      janus filelock packaging pyyaml jinja2 markupsafe typing_extensions \
+      'email-validator' annotated-types aiohttp httpx
+
+# NOTE: no nvidia-nccl-cu13 or nvidia-nvshmem-cu13 guard needed. The
+# --no-deps install never touched them; base's cu13 stack is untouched.
 
 ENV TRTLLM_CAN_USE_DEEP_EP=1
 
