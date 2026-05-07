@@ -44,27 +44,34 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # -----------------------------------------------------------------------------
 ARG TRTLLM_VERSION=0.21.0
 
-# tensorrt_llm 0.21.0 pins torch 2.6.0+cu124 which would shatter v0.2.5's
-# cu13 invariant (EVIDENCE-LEDGER Wave 7d #1). Install --no-deps and
-# curate runtime deps to keep torch 2.11.0+cu130 intact.
+# Recipe (proven via docker-run smoke on v0.2.5 base, same as sglang):
+#   1. Install tensorrt_llm code only (--no-deps)
+#   2. Compute tensorrt_llm's declared deps MINUS torch/flashinfer/etc
+#   3. Install that filtered list normally
+#   4. Force-restore nvidia-nccl-cu13 + nvidia-nvshmem-cu13 to v0.2.5 versions
+#
+# Why: tensorrt_llm 0.21.0 hard-pins torch 2.6+cu124 which would shatter
+# the v0.2.5 cu13 invariant (EVIDENCE-LEDGER Wave 7d #1).
 RUN pip install --no-cache-dir --break-system-packages --no-deps \
       "tensorrt_llm==${TRTLLM_VERSION}"
 
-# Non-torch runtime deps. Curated from tensorrt_llm 0.21.0 pyproject.toml
-# minus {torch*, nvidia-*-cu12, tensorrt (wrong CUDA), flashinfer*}.
-RUN pip install --no-cache-dir --break-system-packages --no-deps \
-      mpi4py accelerate build colored cuda-python diffusers lark \
-      onnx onnx_graphsurgeon openai polygraphy psutil \
-      'nvidia-ml-py>=12' 'pynvml>=12.0.0' pulp pandas 'h5py==3.12.1' \
-      StrEnum 'sentencepiece>=0.1.99' transformers tokenizers safetensors \
-      huggingface_hub requests urllib3 charset-normalizer idna certifi \
-      tqdm pydantic pydantic_core fastapi 'uvicorn[standard]' \
-      starlette sniffio anyio h11 click numpy scipy einops \
-      janus filelock packaging pyyaml jinja2 markupsafe typing_extensions \
-      'email-validator' annotated-types aiohttp httpx
+RUN set -e; \
+    python3 -c "\
+from importlib.metadata import requires; \
+reqs = requires('tensorrt_llm'); \
+bad = {'torch','torchvision','torchaudio','torchcodec','torch_memory_saver','torchao','flashinfer_python','flashinfer_cubin','triton','tensorrt'}; \
+good = [r.split(';')[0].strip() for r in reqs if not any(r.lower().startswith(b.lower()) for b in bad)]; \
+print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
+    pip install --no-cache-dir --break-system-packages -r /tmp/trtllm-deps.txt
 
-# NOTE: no nvidia-nccl-cu13 or nvidia-nvshmem-cu13 guard needed. The
-# --no-deps install never touched them; base's cu13 stack is untouched.
+# Force-restore v0.2.5 cu13 stack
+ARG NVIDIA_NCCL_PIN=2.30.4
+ARG NVSHMEM_PIN=3.6.5
+RUN pip install --no-cache-dir --break-system-packages --no-deps --force-reinstall \
+      "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
+      "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
+
+
 
 ENV TRTLLM_CAN_USE_DEEP_EP=1
 
