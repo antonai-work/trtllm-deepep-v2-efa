@@ -116,19 +116,20 @@ RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps --force-reinstall 
 #   ImportError: cannot import name 'FlashInferAttentionMetadata' from
 #   'tensorrt_llm._torch.attention_backend'
 # Install with --no-deps so torch is NOT re-pinned to the PyPI build.
+#
+# Wave 33.2c: flashinfer's top-level __init__ ALSO dlopens libcuda.so.1
+# at import time. CodeBuild has no NVIDIA driver, so neither
+# `import flashinfer` nor `import tensorrt_llm._torch.attention_backend`
+# is runnable here — they fail with:
+#   ImportError: libcuda.so.1: cannot open shared object file
+# Pip install + wheel presence check only. Real ABI check runs on the
+# pod entrypoint (see k8s manifest).
 ARG FLASHINFER_PIN=0.4.1
 RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps \
       "flashinfer-python==${FLASHINFER_PIN}" && \
-    "${TRTLLM_VENV}/bin/python3" -c "import flashinfer; print('[wave33.2] flashinfer=', flashinfer.__version__)" && \
-    "${TRTLLM_VENV}/bin/python3" -c "import importlib.util; assert importlib.util.find_spec('tensorrt_llm._torch.attention_backend') is not None; print('[wave33.2] tensorrt_llm.attention_backend module spec resolvable (real ABI import runs on GPU pod)')"
-#
-# 32.12b: CANNOT import tensorrt_llm._torch.attention_backend in CodeBuild.
-# The subpackage __init__ imports attention_backend/__init__.py which imports
-# _torch/flashinfer_utils.py -> ... -> tensorrt_llm/bindings (libth_common.so)
-# which dlopens libcuda.so.1, absent in CodeBuild (no NVIDIA driver).
-# Use find_spec() which only resolves the import path from sys.modules
-# without running the module's top-level code. Real ABI check happens on
-# the pod's entrypoint import probe.
+    "${TRTLLM_VENV}/bin/pip" show flashinfer-python | grep -E "^(Name|Version|Location):" && \
+    ls "${TRTLLM_VENV}/lib/python3.12/site-packages/flashinfer/__init__.py" && \
+    echo "[wave33.2c] flashinfer wheel installed (import-check deferred to pod)"
 
 # Build-time probes. CodeBuild has no NVIDIA driver (no libcuda.so.1) so
 # we cannot exercise the CUDA ABI path (tensorrt_llm.bindings loads
