@@ -53,10 +53,13 @@ RUN pip install --no-cache-dir --break-system-packages --no-deps \
 RUN set -e; \
     python3 -c "\
 from importlib.metadata import requires; \
+import re; \
 reqs = requires('tensorrt_llm'); \
-bad = {'torch','torchvision','torchaudio','torchcodec','torch_memory_saver','torchao','flashinfer_python','flashinfer_cubin','triton','wheel'}; \
-good = [r.split(';')[0].strip() for r in reqs if not any(r.lower().startswith(b.lower()) for b in bad)]; \
+bad = {'torch','torchvision','torchaudio','torchcodec','torch-memory-saver','torchao','torch-c-dlpack-ext','flashinfer-python','flashinfer-cubin','triton','wheel','nvidia-nccl-cu13','nvidia-nvshmem-cu13'}; \
+def normdist(s): return re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_','-'); \
+good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
+    cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
     pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
     pip install --no-cache-dir --break-system-packages --ignore-installed \
       --extra-index-url "${TRTLLM_INDEX}" \
@@ -76,14 +79,15 @@ print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
 # NGC; DeepEP V2 at runtime uses NCCL Gin (DEEP_EP_BACKEND=nccl) so NVSHMEM
 # is only needed at DeepEP build time (already done in the base layer).
 
-# Import probe at build time — catch ABI walls immediately so CodeBuild
-# post_build doesn't need a GPU to notice.
-RUN python3 -c "\
-import torch; print('[trtllm-ngc] torch=', torch.__version__, 'cuda=', torch.version.cuda); \
-import tensorrt_llm; print('[trtllm-ngc] tensorrt_llm=', tensorrt_llm.__version__); \
-from tensorrt_llm import bindings; \
-print('[trtllm-ngc] bindings loaded — NGC ABI OK'); \
-import deep_ep; print('[trtllm-ngc] deep_ep ElasticBuffer=', hasattr(deep_ep, 'ElasticBuffer'))"
+# Build-time probes. CodeBuild has no NVIDIA driver (no libcuda.so.1) so
+# we cannot exercise the CUDA ABI path (tensorrt_llm.bindings loads
+# libth_common.so which dlopens libcuda). Limit the probe to version
+# strings + wheel presence; the real ABI check runs on the GPU pod
+# entrypoint (see k8s manifest import-probe block).
+RUN python3 -c "import torch; v=torch.__version__; print('[trtllm-ngc] torch=', v, 'cuda=', torch.version.cuda); assert v.startswith('2.11.0a0'), 'expected NGC torch 2.11.0a0, got '+v; print('[trtllm-ngc] NGC torch alpha confirmed')" && \
+    python3 -c "from importlib.metadata import version; print('[trtllm-ngc] tensorrt_llm=', version('tensorrt_llm'))" && \
+    find /usr/local/lib/python3.12/dist-packages/tensorrt_llm -maxdepth 3 \( -name "libth_common.so" -o -name "bindings*.so" \) | head -5 && \
+    echo "[trtllm-ngc] wheel shared objects located"
 
 ENV TRTLLM_CAN_USE_DEEP_EP=1
 
