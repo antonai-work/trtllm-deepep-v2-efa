@@ -61,9 +61,10 @@ good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
     pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
-    pip install --no-cache-dir --break-system-packages --ignore-installed \
+    pip install --no-cache-dir --break-system-packages \
       --extra-index-url "${TRTLLM_INDEX}" \
-      -r /tmp/trtllm-deps.txt
+      -r /tmp/trtllm-deps.txt && \
+    python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
 # Force-restore NCCL + NVSHMEM to the patched/base versions. tensorrt_llm
 # declares nvidia-nccl-cu13<=2.29.2 which would downgrade NGC's bundled 2.30.x
