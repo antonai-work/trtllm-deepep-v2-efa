@@ -33,6 +33,24 @@ FROM ${BASE_IMAGE_FAST} AS release
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# Wave 34: install openssh-server so mpirun can spawn ranks across pods.
+# TRT-LLM's DeepEP feasibility gate requires local_mpi_size() == 8 per node
+# (see deep_ep.py:_is_deepep_feasible). That means 'mpirun -n 16 -H
+# pod0:8,pod1:8' — which needs SSH between pods. The NGC base has only
+# openssh-client; we add openssh-server here.
+#
+# At pod runtime, the entrypoint will:
+#   1. configure sshd for port 2222, PermitRootLogin=yes, no PAM
+#   2. generate host keys if missing
+#   3. distribute an ed25519 keypair between pod0 and pod1 via FSX-shared file
+#   4. start sshd in background
+# Image-side cost: ~12 MB.
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends openssh-server netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh
+
 # -----------------------------------------------------------------------------
 # TensorRT-LLM 1.3.0rc14 from NVIDIA PyPI.
 #
