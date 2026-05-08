@@ -60,12 +60,14 @@ normdist = lambda s: re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_'
 good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
+    TORCH_VER=$(python3 -c "import torch; print(torch.__version__)") && \
+    echo "[pre-deps] preserving torch=${TORCH_VER}" && \
+    echo "torch==${TORCH_VER}" > /tmp/trtllm-constraints.txt && \
     pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
-    pip install --no-cache-dir --break-system-packages \
+    pip install --no-cache-dir --break-system-packages --ignore-installed \
       --extra-index-url "${TRTLLM_INDEX}" \
+      -c /tmp/trtllm-constraints.txt \
       -r /tmp/trtllm-deps.txt && \
-    pip install --no-deps --force-reinstall \
-      torch==2.11.0a0+eb65b36914.nv26.2 && \
     python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
 # Force-restore NCCL + NVSHMEM to the patched/base versions. tensorrt_llm
