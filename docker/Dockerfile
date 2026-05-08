@@ -44,7 +44,19 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TRTLLM_VERSION=1.3.0rc14
 ARG TRTLLM_INDEX=https://pypi.nvidia.com
 
-# Recipe: same shape as Wave 32 (--no-deps + filter + --ignore-installed wheel).
+# Recipe (restored from be05ea0 — pre-Wave-33 working shape):
+#   1. Install tensorrt_llm code only with --no-deps from NVIDIA PyPI
+#   2. Extract declared deps, filter out torch/nccl/nvshmem/triton/flashinfer
+#      (ecosystem packages we need to keep at base versions; bad set includes
+#       hyphenated AND underscore forms because requires-dist may use either)
+#   3. Install the filtered deps with NORMAL pip resolution (no --ignore-installed).
+#      Key insight: --ignore-installed triggers uninstall-no-record-file on
+#      apt-managed packages in NGC base (Pygments 2.17.2, etc). Since torch
+#      and nvidia-* are already in the base and satisfy constraints, normal
+#      pip resolution preserves them and only fills missing transitives.
+#   4. Force-restore the patched NCCL 2.30.4 and NVSHMEM 3.6.5 after, since
+#      tensorrt_llm declares nvidia-nccl-cu13<=2.29.2 which would downgrade
+#      our patched libnccl.so.2.
 RUN pip install --no-cache-dir --break-system-packages --no-deps \
       --index-url "${TRTLLM_INDEX}" \
       --extra-index-url https://pypi.org/simple \
@@ -55,35 +67,29 @@ RUN set -e; \
 from importlib.metadata import requires; \
 import re; \
 reqs = requires('tensorrt_llm'); \
-bad = {'torch','torchvision','torchaudio','torchcodec','torch-memory-saver','torchao','torch-c-dlpack-ext','flashinfer-python','flashinfer-cubin','triton','wheel','nvidia-nccl-cu13','nvidia-nvshmem-cu13'}; \
+bad = {'torch','torchvision','torchaudio','torchcodec','torch-memory-saver','torchao','torch-c-dlpack-ext','flashinfer-python','flashinfer-cubin','triton','nvidia-nccl-cu13','nvidia-nvshmem-cu13'}; \
 normdist = lambda s: re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_','-'); \
 good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
     TORCH_VER=$(python3 -c "import torch; print(torch.__version__)") && \
     echo "[pre-deps] preserving torch=${TORCH_VER}" && \
-    pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
-    pip install --no-cache-dir --break-system-packages --ignore-installed --no-deps \
-      --extra-index-url "${TRTLLM_INDEX}" \
-      -r /tmp/trtllm-deps.txt && \
     pip install --no-cache-dir --break-system-packages \
       --extra-index-url "${TRTLLM_INDEX}" \
       -r /tmp/trtllm-deps.txt && \
     python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
-# Force-restore NCCL + NVSHMEM to the patched/base versions. tensorrt_llm
-# declares nvidia-nccl-cu13<=2.29.2 which would downgrade NGC's bundled 2.30.x
-# and blow away our patched libnccl.so.2. The base's libnccl.so.2 stays
-# intact (it lives at /usr/local/lib/python3.12/dist-packages/nvidia/nccl/
-# lib/libnccl.so.2) because --no-deps above skipped the nvidia-nccl-cu13
-# dep from the trtllm wheel, and --ignore-installed in the filtered-deps
-# install leaves the existing libnccl.so.2 file alone.
-#
-# NVSHMEM: NGC ships NVSHMEM bundled differently than the PyPI cu13 wheel
-# layout. We don't force-reinstall it here because the PyPI-path
-# /usr/local/lib/python3.12/dist-packages/nvidia/nvshmem/ may not exist on
-# NGC; DeepEP V2 at runtime uses NCCL Gin (DEEP_EP_BACKEND=nccl) so NVSHMEM
-# is only needed at DeepEP build time (already done in the base layer).
+# Force-restore patched NCCL + NVSHMEM (pre-Wave-33 pattern from be05ea0).
+# tensorrt_llm declares nvidia-nccl-cu13<=2.29.2 which the filtered-deps
+# install above skipped (nvidia-nccl-cu13 in bad set), so NGC's bundled
+# libnccl.so.2 should still be intact. This --no-deps --force-reinstall
+# restores the specific pinned versions explicitly in case anything in
+# the filtered deps pulled a different version.
+ARG NVIDIA_NCCL_PIN=2.30.4
+ARG NVSHMEM_PIN=3.6.5
+RUN pip install --no-cache-dir --break-system-packages --no-deps --force-reinstall \
+      "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
+      "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
 
 # Build-time probes. CodeBuild has no NVIDIA driver (no libcuda.so.1) so
 # we cannot exercise the CUDA ABI path (tensorrt_llm.bindings loads
