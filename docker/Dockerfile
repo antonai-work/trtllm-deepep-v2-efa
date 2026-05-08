@@ -64,6 +64,8 @@ print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     pip install --no-cache-dir --break-system-packages \
       --extra-index-url "${TRTLLM_INDEX}" \
       -r /tmp/trtllm-deps.txt && \
+    pip install --no-deps --force-reinstall \
+      torch==2.11.0a0+eb65b36914.nv26.2 && \
     python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
 # Force-restore NCCL + NVSHMEM to the patched/base versions. tensorrt_llm
