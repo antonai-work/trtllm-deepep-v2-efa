@@ -104,6 +104,24 @@ RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps --force-reinstall 
       "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
       "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
 
+# Wave 33.2: restore flashinfer after the filtered-deps install.
+# The parent bad-set in /tmp/trtllm-deps.txt deliberately skipped
+# {flashinfer-python, flashinfer-cubin} to prevent them from pulling torch
+# as a hard dep, but tensorrt_llm 1.3.0rc14 HARD-IMPORTS flashinfer at
+# module load:
+#   tensorrt_llm/_torch/flashinfer_utils.py:20   import flashinfer
+#   tensorrt_llm/_torch/attention_backend/__init__.py  exports
+#   FlashInferAttentionMetadata
+# Pod run at 2026-05-08 13:34 UTC hit:
+#   ImportError: cannot import name 'FlashInferAttentionMetadata' from
+#   'tensorrt_llm._torch.attention_backend'
+# Install with --no-deps so torch is NOT re-pinned to the PyPI build.
+ARG FLASHINFER_PIN=0.4.1
+RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps \
+      "flashinfer-python==${FLASHINFER_PIN}" && \
+    "${TRTLLM_VENV}/bin/python3" -c "import flashinfer; print('[wave33.2] flashinfer=', flashinfer.__version__)" && \
+    "${TRTLLM_VENV}/bin/python3" -c "from tensorrt_llm._torch.attention_backend import FlashInferAttentionMetadata; print('[wave33.2] tensorrt_llm import chain clean')"
+
 # Build-time probes. CodeBuild has no NVIDIA driver (no libcuda.so.1) so
 # we cannot exercise the CUDA ABI path (tensorrt_llm.bindings loads
 # libth_common.so which dlopens libcuda). Limit the probe to version
