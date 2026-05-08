@@ -120,7 +120,15 @@ ARG FLASHINFER_PIN=0.4.1
 RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps \
       "flashinfer-python==${FLASHINFER_PIN}" && \
     "${TRTLLM_VENV}/bin/python3" -c "import flashinfer; print('[wave33.2] flashinfer=', flashinfer.__version__)" && \
-    "${TRTLLM_VENV}/bin/python3" -c "from tensorrt_llm._torch.attention_backend import FlashInferAttentionMetadata; print('[wave33.2] tensorrt_llm import chain clean')"
+    "${TRTLLM_VENV}/bin/python3" -c "import importlib.util; assert importlib.util.find_spec('tensorrt_llm._torch.attention_backend') is not None; print('[wave33.2] tensorrt_llm.attention_backend module spec resolvable (real ABI import runs on GPU pod)')"
+#
+# 32.12b: CANNOT import tensorrt_llm._torch.attention_backend in CodeBuild.
+# The subpackage __init__ imports attention_backend/__init__.py which imports
+# _torch/flashinfer_utils.py -> ... -> tensorrt_llm/bindings (libth_common.so)
+# which dlopens libcuda.so.1, absent in CodeBuild (no NVIDIA driver).
+# Use find_spec() which only resolves the import path from sys.modules
+# without running the module's top-level code. Real ABI check happens on
+# the pod's entrypoint import probe.
 
 # Build-time probes. CodeBuild has no NVIDIA driver (no libcuda.so.1) so
 # we cannot exercise the CUDA ABI path (tensorrt_llm.bindings loads
