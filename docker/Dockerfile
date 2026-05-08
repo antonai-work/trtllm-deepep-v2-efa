@@ -62,11 +62,12 @@ print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
     TORCH_VER=$(python3 -c "import torch; print(torch.__version__)") && \
     echo "[pre-deps] preserving torch=${TORCH_VER}" && \
-    echo "torch==${TORCH_VER}" > /tmp/trtllm-constraints.txt && \
     pip install --no-cache-dir --break-system-packages --ignore-installed wheel && \
-    pip install --no-cache-dir --break-system-packages --ignore-installed \
+    pip install --no-cache-dir --break-system-packages --ignore-installed --no-deps \
       --extra-index-url "${TRTLLM_INDEX}" \
-      -c /tmp/trtllm-constraints.txt \
+      -r /tmp/trtllm-deps.txt && \
+    pip install --no-cache-dir --break-system-packages \
+      --extra-index-url "${TRTLLM_INDEX}" \
       -r /tmp/trtllm-deps.txt && \
     python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
