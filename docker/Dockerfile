@@ -56,7 +56,7 @@ from importlib.metadata import requires; \
 import re; \
 reqs = requires('tensorrt_llm'); \
 bad = {'torch','torchvision','torchaudio','torchcodec','torch-memory-saver','torchao','torch-c-dlpack-ext','flashinfer-python','flashinfer-cubin','triton','wheel','nvidia-nccl-cu13','nvidia-nvshmem-cu13'}; \
-def normdist(s): return re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_','-'); \
+normdist = lambda s: re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_','-'); \
 good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
