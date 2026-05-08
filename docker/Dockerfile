@@ -109,9 +109,9 @@ RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps --force-reinstall 
 # libth_common.so which dlopens libcuda). Limit the probe to version
 # strings + wheel presence; the real ABI check runs on the GPU pod
 # entrypoint (see k8s manifest import-probe block).
-RUN python3 -c "import torch; v=torch.__version__; print('[trtllm-ngc] torch=', v, 'cuda=', torch.version.cuda); assert v.startswith('2.11.0a0'), 'expected NGC torch 2.11.0a0, got '+v; print('[trtllm-ngc] NGC torch alpha confirmed')" && \
-    python3 -c "from importlib.metadata import version; print('[trtllm-ngc] tensorrt_llm=', version('tensorrt_llm'))" && \
-    find /usr/local/lib/python3.12/dist-packages/tensorrt_llm -maxdepth 3 \( -name "libth_common.so" -o -name "bindings*.so" \) | head -5 && \
+RUN "${TRTLLM_VENV}/bin/python3" -c "import torch; v=torch.__version__; print('[trtllm-ngc] torch=', v, 'cuda=', torch.version.cuda); assert v.startswith('2.11.0a0'), 'expected NGC torch 2.11.0a0, got '+v; print('[trtllm-ngc] NGC torch alpha confirmed')" && \
+    "${TRTLLM_VENV}/bin/python3" -c "from importlib.metadata import version; print('[trtllm-ngc] tensorrt_llm=', version('tensorrt_llm'))" && \
+    find "${TRTLLM_VENV}/lib/python3.12/site-packages/tensorrt_llm" -maxdepth 3 \( -name "libth_common.so" -o -name "bindings*.so" \) | head -5 && \
     echo "[trtllm-ngc] wheel shared objects located"
 
 ENV TRTLLM_CAN_USE_DEEP_EP=1
