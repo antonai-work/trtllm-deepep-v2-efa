@@ -44,26 +44,39 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG TRTLLM_VERSION=1.3.0rc14
 ARG TRTLLM_INDEX=https://pypi.nvidia.com
 
-# Recipe (restored from be05ea0 — pre-Wave-33 working shape):
-#   1. Install tensorrt_llm code only with --no-deps from NVIDIA PyPI
-#   2. Extract declared deps, filter out torch/nccl/nvshmem/triton/flashinfer
-#      (ecosystem packages we need to keep at base versions; bad set includes
-#       hyphenated AND underscore forms because requires-dist may use either)
-#   3. Install the filtered deps with NORMAL pip resolution (no --ignore-installed).
-#      Key insight: --ignore-installed triggers uninstall-no-record-file on
-#      apt-managed packages in NGC base (Pygments 2.17.2, etc). Since torch
-#      and nvidia-* are already in the base and satisfy constraints, normal
-#      pip resolution preserves them and only fills missing transitives.
-#   4. Force-restore the patched NCCL 2.30.4 and NVSHMEM 3.6.5 after, since
-#      tensorrt_llm declares nvidia-nccl-cu13<=2.29.2 which would downgrade
-#      our patched libnccl.so.2.
-RUN pip install --no-cache-dir --break-system-packages --no-deps \
+# Recipe (venv isolation — Wave 33 architectural fix):
+#   Installing tensorrt_llm into the NGC base's system python triggers pip's
+#   uninstall-no-record-file death on apt-managed packages (wheel 0.42.0,
+#   Pygments 2.17.2, setuptools, safetensors, pyzmq — all shipped via apt in
+#   NGC pytorch:26.02). Builds #11-#19 all hit this wall regardless of
+#   --ignore-installed / --no-deps / --force-reinstall flag permutations.
+#
+#   Root cause: apt-managed packages have no RECORD file; pip cannot uninstall
+#   them. Any filtered-deps install that wants to upgrade e.g. Pygments>=2.18
+#   tries to uninstall 2.17.2 first and dies. Local repro confirmed the N+1th
+#   conflicting apt package surfaces after every single-package exclusion.
+#
+#   Fix: install tensorrt_llm into /opt/trtllm-venv with --system-site-packages.
+#   The venv SEES the base's torch 2.11.0a0 + nvidia-nccl-cu13 + nvidia-nvshmem-cu13
+#   (satisfying tensorrt_llm's dep constraints without triggering upgrades).
+#   New installs land in the venv's own site-packages with proper RECORD files.
+#   apt packages are SHADOWED by venv packages, not uninstalled.
+#
+#   Verified locally (2026-05-08): scratch/wave33-trtllm-local-verify/03-verify-venv-fix.sh
+#   PASSED all 4 steps against the real NGC base in 2m45s.
+ENV TRTLLM_VENV=/opt/trtllm-venv
+ENV PATH=${TRTLLM_VENV}/bin:${PATH}
+
+RUN python3 -m venv --system-site-packages "${TRTLLM_VENV}" && \
+    "${TRTLLM_VENV}/bin/python3" -c "import torch; v=torch.__version__; print('[venv-create] torch=', v); assert v.startswith('2.11.0a0'), 'base torch lost: '+v"
+
+RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps \
       --index-url "${TRTLLM_INDEX}" \
       --extra-index-url https://pypi.org/simple \
       "tensorrt_llm==${TRTLLM_VERSION}"
 
 RUN set -e; \
-    python3 -c "\
+    "${TRTLLM_VENV}/bin/python3" -c "\
 from importlib.metadata import requires; \
 import re; \
 reqs = requires('tensorrt_llm'); \
@@ -72,22 +85,22 @@ normdist = lambda s: re.split(r'[<>=! ;,\[]',s,1)[0].strip().lower().replace('_'
 good = [r.split(';')[0].strip() for r in reqs if normdist(r) not in bad]; \
 print('\n'.join(good))" > /tmp/trtllm-deps.txt && \
     cat /tmp/trtllm-deps.txt && echo "--- deps end ---" && \
-    TORCH_VER=$(python3 -c "import torch; print(torch.__version__)") && \
+    TORCH_VER=$("${TRTLLM_VENV}/bin/python3" -c "import torch; print(torch.__version__)") && \
     echo "[pre-deps] preserving torch=${TORCH_VER}" && \
-    pip install --no-cache-dir --break-system-packages \
+    "${TRTLLM_VENV}/bin/pip" install --no-cache-dir \
       --extra-index-url "${TRTLLM_INDEX}" \
       -r /tmp/trtllm-deps.txt && \
-    python3 -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
+    "${TRTLLM_VENV}/bin/python3" -c "import torch; v=torch.__version__; print('[post-deps] torch=', v); assert v.startswith('2.11.0a0'), 'torch downgraded to '+v+' after deps install'"
 
-# Force-restore patched NCCL + NVSHMEM (pre-Wave-33 pattern from be05ea0).
-# tensorrt_llm declares nvidia-nccl-cu13<=2.29.2 which the filtered-deps
-# install above skipped (nvidia-nccl-cu13 in bad set), so NGC's bundled
-# libnccl.so.2 should still be intact. This --no-deps --force-reinstall
-# restores the specific pinned versions explicitly in case anything in
-# the filtered deps pulled a different version.
+# Force-restore patched NCCL + NVSHMEM. tensorrt_llm declares
+# nvidia-nccl-cu13<=2.29.2 which the filtered-deps install above skipped
+# (in bad set). The venv with --system-site-packages inherits the base's
+# libnccl.so.2 (2.30.4-patched) and libnvshmem_host.so (3.6.5) automatically,
+# so this reinstall is defensive only — ensures pinned versions survive
+# even if a transitive dep attempts a version flip inside the venv.
 ARG NVIDIA_NCCL_PIN=2.30.4
 ARG NVSHMEM_PIN=3.6.5
-RUN pip install --no-cache-dir --break-system-packages --no-deps --force-reinstall \
+RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps --force-reinstall \
       "nvidia-nccl-cu13==${NVIDIA_NCCL_PIN}" \
       "nvidia-nvshmem-cu13==${NVSHMEM_PIN}"
 
