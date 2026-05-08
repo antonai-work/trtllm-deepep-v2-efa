@@ -124,7 +124,12 @@ RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps --force-reinstall 
 #   ImportError: libcuda.so.1: cannot open shared object file
 # Pip install + wheel presence check only. Real ABI check runs on the
 # pod entrypoint (see k8s manifest).
-ARG FLASHINFER_PIN=0.4.1
+# flashinfer pin MUST match tensorrt_llm's requires_dist. tensorrt_llm
+# 1.3.0rc14 declares `flashinfer-python==0.6.9`. Using 0.4.1 broke pod
+# startup with:
+#   ImportError: cannot import name 'fused_add_rmsnorm_quant' from
+#     'flashinfer.norm'
+ARG FLASHINFER_PIN=0.6.9
 RUN "${TRTLLM_VENV}/bin/pip" install --no-cache-dir --no-deps \
       "flashinfer-python==${FLASHINFER_PIN}" && \
     "${TRTLLM_VENV}/bin/pip" show flashinfer-python | grep -E "^(Name|Version|Location):" && \
