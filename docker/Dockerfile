@@ -58,7 +58,7 @@ RUN find /usr/lib/python3*/EXTERNALLY-MANAGED -delete 2>/dev/null || true; \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      openmpi-bin libopenmpi-dev openmpi-common openssh-client \
+      openmpi-bin libopenmpi-dev openmpi-common openssh-client openssh-server netcat-openbsd \
       libfmt-dev && \
     apt-get clean && rm -rf /var/lib/apt/lists/* && \
     ompi_info --version 2>&1 | head -3 || true
