@@ -121,13 +121,14 @@ RUN set -eux; \
     export LIBRARY_PATH="${NCCL_LIB_DIR:-}:${LIBRARY_PATH:-}"; \
     export TORCH_CUDA_ARCH_LIST="9.0"; \
     export MAX_JOBS="$(nproc)"; \
-    (pip install --no-build-isolation --break-system-packages --force-reinstall --no-deps -e . \
-        > /tmp/deep_ep_build.log 2>&1; rc=$?; \
-        tail -50 /tmp/deep_ep_build.log; \
-        [ $rc -eq 0 ] || echo "WARN: deep_ep rebuild rc=$rc (needs libcuda.so.1 at runtime; will recompile in pod)"; \
-        true); \
+    set +e; \
+    pip install --no-build-isolation --break-system-packages --force-reinstall --no-deps -e . > /tmp/deep_ep_build.log 2>&1; \
+    DEEP_EP_RC=$?; \
+    tail -30 /tmp/deep_ep_build.log; \
+    echo "deep_ep rebuild rc=${DEEP_EP_RC}"; \
     python3 -c "import deep_ep; print('ElasticBuffer:', deep_ep.ElasticBuffer)" || \
-      echo "WARN: deep_ep import deferred to runtime (pod will recompile against torch 2.7.1 + cuda)"
+      echo "WARN: deep_ep import deferred to runtime (pod will recompile against torch 2.7.1 + cuda)"; \
+    true
 
 # -----------------------------------------------------------------------------
 # 5. api-shim + harness. The shim monkeypatches deep_ep.Buffer ->
