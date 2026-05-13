@@ -488,7 +488,15 @@ class CompatBuffer:
         num_experts % num_ranks == 0, so an accurate value is required).
         """
         self._num_experts_hint = int(num_experts)
+        # Wave 34.14: TRT-LLM 0.21 VariableLengthBuffer.dispatch at
+        # deep_ep_utils.py:71 asserts `event.event is None` on sync path.
+        # V2 ElasticBuffer returns EventOverlap with .event populated;
+        # explicitly null it for the sync contract.
         evt = EventOverlap(EventHandle()) if async_finish else EventOverlap()
+        try:
+            evt.event = None
+        except Exception:
+            pass
         return None, None, None, None, evt
 
     def dispatch(
@@ -695,6 +703,18 @@ class CompatBuffer:
 
         self._cached_handle = v2_handle
 
+        # Wave 34.14: TRT-LLM 0.21 VariableLengthBuffer.dispatch at
+        # deep_ep_utils.py:80 asserts `event.event is None` on sync path.
+        if not async_finish:
+            try:
+                event.event = None
+            except Exception:
+                event = EventOverlap()
+                try:
+                    event.event = None
+                except Exception:
+                    pass
+
         return (recv_x, recv_topk_idx, recv_topk_weights,
                 num_recv_per_expert, v2_handle, event)
 
@@ -788,6 +808,17 @@ class CompatBuffer:
             async_with_compute_stream=async_finish,
             allocate_on_comm_stream=_alloc_on_comm,
         )
+        # Wave 34.14: TRT-LLM 0.21 VariableLengthBuffer.combine at
+        # deep_ep_utils.py:89 asserts `event.event is None` on sync path.
+        if not async_finish:
+            try:
+                event.event = None
+            except Exception:
+                event = EventOverlap()
+                try:
+                    event.event = None
+                except Exception:
+                    pass
         return combined_x, combined_weights, event
 
     # -----------------------------------------------------------------
